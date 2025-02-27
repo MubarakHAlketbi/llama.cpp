@@ -451,7 +451,7 @@ static struct ggml_tensor* llm_build_moe_ffn(
     ggml_tensor* topk_idx;
     ggml_tensor* topk_weight;
 
-    if (hparams.topk_method == "noaux_tc") {
+    if (strcmp(hparams.topk_method, "noaux_tc") == 0) {
         ggml_tensor* selection_probs = ggml_add(ctx, probs, exp_probs_b);
         cb(selection_probs, "ffn_moe_probs_biased", il);
 

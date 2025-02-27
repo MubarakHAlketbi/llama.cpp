@@ -126,7 +126,13 @@ static const std::map<llm_kv, const char *> LLM_KV_NAMES = {
     { LLM_KV_ATTENTION_RELATIVE_BUCKETS_COUNT, "%s.attention.relative_buckets_count" },
     { LLM_KV_ATTENTION_SLIDING_WINDOW,         "%s.attention.sliding_window"         },
     { LLM_KV_ATTENTION_SCALE,                  "%s.attention.scale"                  },
-
+    
+    // Add mappings for the new constants
+    { LLM_KV_ATTENTION_QK_ROPE_HEAD_DIM,       "%s.attention.qk_rope_head_dim"       },
+    { LLM_KV_ATTENTION_QK_NOPE_HEAD_DIM,       "%s.attention.qk_nope_head_dim"       },
+    { LLM_KV_ATTENTION_V_HEAD_DIM,             "%s.attention.v_head_dim"             },
+    { LLM_KV_MOE_LAYER_FREQ,                   "%s.moe.layer_freq"                   },
+    { LLM_KV_ROUTED_SCALING_FACTOR,            "%s.moe.routed_scaling_factor"        },
     { LLM_KV_ROPE_DIMENSION_COUNT,      "%s.rope.dimension_count"                 },
     { LLM_KV_ROPE_DIMENSION_SECTIONS,   "%s.rope.dimension_sections"              },
     { LLM_KV_ROPE_FREQ_BASE,            "%s.rope.freq_base"                       },

@@ -45,6 +45,20 @@ struct llama_hparams {
     // New fields for DeepSeek V3 (LoRA-related)
     uint32_t q_lora_rank = 0;  // Rank for query LoRA projection
     uint32_t kv_lora_rank = 0; // Rank for key-value LoRA projection
+    // DeepSeek V3-specific attention fields
+    uint32_t qk_nope_head_dim = 0;  // Dimension of non-RoPE head
+    uint32_t v_head_dim = 0;        // Dimension of value head
+    // DeepSeek V3-specific MoE fields
+    uint32_t moe_layer_freq = 0;    // Frequency of MoE layers
+    char topk_method[16] = "";       // Top-k selection method (e.g., "noaux_tc")
+
+    // YaRN RoPE scaling fields
+    float rope_scaling_factor = 1.0f;  // RoPE scaling factor
+    uint32_t rope_orig_max_pos_embd = 0;  // Original max position embeddings
+    uint32_t rope_beta_fast = 32;      // YaRN beta fast
+    uint32_t rope_beta_slow = 1;       // YaRN beta slow
+    float rope_mscale = 1.0f;          // YaRN mscale
+    float rope_mscale_all_dim = 0.0f;  // YaRN mscale_all_dim
 
     // for WavTokenizer
     struct llama_hparams_posnet   posnet;

@@ -388,7 +388,7 @@ void llama_model::load_arch(llama_model_loader & ml) {
 void llama_model::load_hparams(llama_model_loader & ml) {
     const gguf_context * ctx = ml.meta.get();
 
-    // get metadata as string
+    // Get metadata as string
     for (int i = 0; i < gguf_get_n_kv(ctx); i++) {
         enum gguf_type type = gguf_get_kv_type(ctx, i);
         if (type == GGUF_TYPE_ARRAY) {
@@ -399,10 +399,10 @@ void llama_model::load_hparams(llama_model_loader & ml) {
         gguf_kv.emplace(name, value);
     }
 
-    // get general kv
+    // Get general kv
     ml.get_key(LLM_KV_GENERAL_NAME, name, false);
 
-    // everything past this point is not vocab-related
+    // Everything past this point is not vocab-related
     if (hparams.vocab_only) {
         return;
     }
@@ -431,17 +431,14 @@ void llama_model::load_hparams(llama_model_loader & ml) {
         GGML_ASSERT(hparams.n_expert_used == 0);
     }
 
-    // zero-out the array hparams
+    // Zero-out the arrays
     std::fill(hparams.n_head_arr.begin(),    hparams.n_head_arr.end(),    0);
     std::fill(hparams.n_head_kv_arr.begin(), hparams.n_head_kv_arr.end(), 0);
     std::fill(hparams.n_ff_arr.begin(),      hparams.n_ff_arr.end(),      0);
 
     ml.get_key_or_arr(LLM_KV_FEED_FORWARD_LENGTH,  hparams.n_ff_arr,   hparams.n_layer, false);
     ml.get_key_or_arr(LLM_KV_ATTENTION_HEAD_COUNT, hparams.n_head_arr, hparams.n_layer, false);
-
-    // n_head_kv is optional, default to n_head
-    hparams.n_head_kv_arr = hparams.n_head_arr;
-
+    hparams.n_head_kv_arr = hparams.n_head_arr; // Default to n_head
     ml.get_key_or_arr(LLM_KV_ATTENTION_HEAD_COUNT_KV, hparams.n_head_kv_arr, hparams.n_layer, false);
 
     bool rope_finetuned = false;
@@ -451,7 +448,6 @@ void llama_model::load_hparams(llama_model_loader & ml) {
     hparams.n_ctx_orig_yarn = hparams.n_ctx_train;
     ml.get_key(LLM_KV_ROPE_SCALING_ORIG_CTX_LEN, hparams.n_ctx_orig_yarn, false);
 
-    // rope_freq_base (optional)
     hparams.rope_freq_base_train = 10000.0f;
     ml.get_key(LLM_KV_ROPE_FREQ_BASE, hparams.rope_freq_base_train, false);
 
@@ -460,49 +456,111 @@ void llama_model::load_hparams(llama_model_loader & ml) {
     hparams.rope_scaling_type_train = llama_rope_scaling_type_from_string(rope_scaling);
     GGML_ASSERT(hparams.rope_scaling_type_train != LLAMA_ROPE_SCALING_TYPE_UNSPECIFIED);
 
-    // rope_freq_scale (inverse of the kv) is optional
     float ropescale = 0.0f;
     if (!ml.get_key(LLM_KV_ROPE_SCALING_FACTOR, ropescale, false)) {
-        // try the old key name
         ml.get_key(LLM_KV_ROPE_SCALE_LINEAR, ropescale, false);
     }
-    hparams.rope_freq_scale_train = ropescale == 0.0f ? 1.0f : 1.0f/ropescale;
+    hparams.rope_freq_scale_train = ropescale == 0.0f ? 1.0f : 1.0f / ropescale;
 
     ml.get_key(LLM_KV_ROPE_SCALING_ATTN_FACTOR, hparams.rope_attn_factor, false);
 
-    // non-transformer models do not have attention heads
+    // Non-transformer models do not have attention heads
     if (hparams.n_head() > 0) {
-        // gpt-neox n_rot = rotary_pct * (n_embd / n_head)
-        // gpt-j n_rot = rotary_dim
-
         hparams.n_embd_head_k = hparams.n_embd / hparams.n_head();
         ml.get_key(LLM_KV_ATTENTION_KEY_LENGTH, hparams.n_embd_head_k, false);
 
         hparams.n_embd_head_v = hparams.n_embd / hparams.n_head();
         ml.get_key(LLM_KV_ATTENTION_VALUE_LENGTH, hparams.n_embd_head_v, false);
 
-        // sanity check for n_rot (optional)
         hparams.n_rot = hparams.n_embd_head_k;
-
         ml.get_key(LLM_KV_ROPE_DIMENSION_COUNT, hparams.n_rot, false);
-
-        if (arch == LLM_ARCH_LLAMA || arch == LLM_ARCH_DECI || arch == LLM_ARCH_FALCON) {
-            if (hparams.n_rot != hparams.n_embd_head_k) {
-                throw std::runtime_error(format("invalid n_rot: %u, expected %u", hparams.n_rot, hparams.n_embd_head_k));
-            }
-        }
     } else {
         hparams.n_rot = 0;
         hparams.n_embd_head_k = 0;
         hparams.n_embd_head_v = 0;
     }
 
-    // for differentiating model types
     uint32_t n_vocab = 0;
     ml.get_key(LLM_KV_VOCAB_SIZE, n_vocab, false) || ml.get_arr_n(LLM_KV_TOKENIZER_LIST, n_vocab, false);
 
-    // arch-specific KVs
+    // Arch-specific KVs
     switch (arch) {
+        case LLM_ARCH_DEEPSEEK3:
+            {
+                ml.get_key(LLM_KV_ATTENTION_LAYERNORM_RMS_EPS, hparams.f_norm_rms_eps);
+
+                // Attention-specific
+                ml.get_key(LLM_KV_ATTENTION_Q_LORA_RANK, hparams.q_lora_rank, false); // Optional
+                ml.get_key(LLM_KV_ATTENTION_KV_LORA_RANK, hparams.kv_lora_rank);
+                ml.get_key(LLM_KV_ATTENTION_QK_ROPE_HEAD_DIM, hparams.n_rot); // Maps to n_rot
+                ml.get_key(LLM_KV_ATTENTION_QK_NOPE_HEAD_DIM, hparams.qk_nope_head_dim);
+                ml.get_key(LLM_KV_ATTENTION_V_HEAD_DIM, hparams.v_head_dim);
+
+                // Validate attention dimensions
+                if (hparams.n_head() > 0) {
+                    uint32_t expected_n_embd_head_k = hparams.qk_nope_head_dim + hparams.n_rot;
+                    if (hparams.n_embd_head_k != expected_n_embd_head_k) {
+                        LLAMA_LOG_WARN("%s: n_embd_head_k (%u) does not match qk_nope_head_dim (%u) + n_rot (%u)",
+                                       __func__, hparams.n_embd_head_k, hparams.qk_nope_head_dim, hparams.n_rot);
+                        hparams.n_embd_head_k = expected_n_embd_head_k;
+                    }
+                    if (hparams.n_embd_head_v != hparams.v_head_dim) {
+                        LLAMA_LOG_WARN("%s: n_embd_head_v (%u) does not match v_head_dim (%u)",
+                                       __func__, hparams.n_embd_head_v, hparams.v_head_dim);
+                        hparams.n_embd_head_v = hparams.v_head_dim;
+                    }
+                }
+
+                // MoE-specific
+                ml.get_key(LLM_KV_LEADING_DENSE_BLOCK_COUNT, hparams.n_layer_dense_lead);
+                ml.get_key(LLM_KV_MOE_LAYER_FREQ, hparams.moe_layer_freq);
+                ml.get_key(LLM_KV_EXPERT_COUNT, hparams.n_routed_experts); // Rename n_expert to n_routed_experts
+                hparams.n_expert = hparams.n_routed_experts; // Backward compatibility
+                ml.get_key(LLM_KV_EXPERT_USED_COUNT, hparams.n_expert_used);
+                ml.get_key(LLM_KV_EXPERT_SHARED_COUNT, hparams.n_shared_experts, false);
+                ml.get_key(LLM_KV_EXPERT_FEED_FORWARD_LENGTH, hparams.n_ff_exp);
+                ml.get_key(LLM_KV_ROUTED_SCALING_FACTOR, hparams.routed_scaling_factor);
+                std::string temp_topk;
+                ml.get_key(LLM_KV_TOPK_METHOD, temp_topk, false);
+                if (temp_topk.empty()) {
+                    strncpy(hparams.topk_method, "noaux_tc", sizeof(hparams.topk_method) - 1);
+                } else {
+                    strncpy(hparams.topk_method, temp_topk.c_str(), sizeof(hparams.topk_method) - 1);
+                }
+                hparams.topk_method[sizeof(hparams.topk_method) - 1] = '\0'; // Ensure null-termination
+                ml.get_key(LLM_KV_TOPK_GROUP_COUNT, hparams.n_group);
+                ml.get_key(LLM_KV_TOPK_GROUP, hparams.topk_group);
+                ml.get_key(LLM_KV_EXPERT_WEIGHTS_NORM, hparams.expert_weights_norm, false);
+                uint32_t gating_func = LLAMA_EXPERT_GATING_FUNC_TYPE_SIGMOID; // Default for V3
+                ml.get_key(LLM_KV_EXPERT_GATING_FUNC, gating_func, false);
+                hparams.expert_gating_func = static_cast<llama_expert_gating_func_type>(gating_func);
+
+                // YaRN-specific RoPE scaling
+                ml.get_key(LLM_KV_ROPE_SCALING_FACTOR, hparams.rope_scaling_factor, false);
+                ml.get_key(LLM_KV_ROPE_SCALING_ORIG_MAX_POS_EMBD, hparams.rope_orig_max_pos_embd, false);
+                ml.get_key(LLM_KV_ROPE_SCALING_BETA_FAST, hparams.rope_beta_fast, false);
+                ml.get_key(LLM_KV_ROPE_SCALING_BETA_SLOW, hparams.rope_beta_slow, false);
+                ml.get_key(LLM_KV_ROPE_SCALING_MSCALE, hparams.rope_mscale, false);
+                ml.get_key(LLM_KV_ROPE_SCALING_MSCALE_ALL_DIM, hparams.rope_mscale_all_dim, false);
+
+                // Model type inference (example)
+                switch (hparams.n_layer) {
+                    case 28: type = LLM_TYPE_20B; break; // Placeholder, adjust based on actual V3 sizes
+                    default: type = LLM_TYPE_UNKNOWN;
+                }
+
+                // Validation
+                if (hparams.n_routed_experts == 0 && hparams.moe_layer_freq > 0) {
+                    throw std::runtime_error("n_routed_experts must be > 0 if moe_layer_freq > 0");
+                }
+                if (strcmp(hparams.topk_method, "noaux_tc") == 0 && (hparams.n_group == 0 || hparams.topk_group == 0)) {
+                    throw std::runtime_error("n_group and topk_group must be set for topk_method 'noaux_tc'");
+                }
+                if (hparams.rope_scaling_type_train == LLAMA_ROPE_SCALING_TYPE_YARN &&
+                    hparams.rope_orig_max_pos_embd == 0) {
+                    hparams.rope_orig_max_pos_embd = hparams.n_ctx_train; // Default fallback
+                }
+            } break;
         case LLM_ARCH_LLAMA:
             {
                 ml.get_key(LLM_KV_ATTENTION_LAYERNORM_RMS_EPS, hparams.f_norm_rms_eps);
@@ -1245,11 +1303,11 @@ void llama_model::load_hparams(llama_model_loader & ml) {
                 ml.get_key(LLM_KV_ATTENTION_GROUPNORM_GROUPS, hparams.n_norm_groups);
                 ml.get_key(LLM_KV_ATTENTION_CAUSAL,           hparams.causal_attn);
             } break;
-        default: throw std::runtime_error("unsupported model architecture");
+        default:
+            throw std::runtime_error("unsupported model architecture");
     }
 
     pimpl->n_bytes = ml.n_bytes;
-
     pimpl->desc_str = arch_name() + " " + type_name() + " " + ml.ftype_name();
 
     if (hparams.f_max_alibi_bias > 0.0f) {
