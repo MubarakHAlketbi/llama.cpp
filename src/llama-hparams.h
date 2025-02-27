@@ -42,6 +42,10 @@ struct llama_hparams {
     uint32_t n_expert_used = 0;
     uint32_t n_rel_attn_bkts = 0;
 
+    // New fields for DeepSeek V3 (LoRA-related)
+    uint32_t q_lora_rank = 0;  // Rank for query LoRA projection
+    uint32_t kv_lora_rank = 0; // Rank for key-value LoRA projection
+
     // for WavTokenizer
     struct llama_hparams_posnet   posnet;
     struct llama_hparams_convnext convnext;
@@ -57,6 +61,13 @@ struct llama_hparams {
     uint32_t n_ff_shexp         = 0;
     uint32_t n_expert_shared    = 0;
     uint32_t n_norm_groups      = 0;
+
+    // New fields for DeepSeek V3 (MoE-related)
+    uint32_t n_routed_experts = 0;      // Number of routed experts in MoE
+    uint32_t n_shared_experts = 0;      // Number of shared experts in MoE
+    uint32_t n_group = 0;               // Number of groups for MoE gating
+    uint32_t topk_group = 0;            // Top-k groups for MoE gating
+    float    routed_scaling_factor = 1.0f; // Scaling factor for routed experts
 
     float    expert_weights_scale = 0.0;
     bool     expert_weights_norm  = false;
@@ -136,4 +147,3 @@ struct llama_hparams {
 };
 
 static_assert(std::is_trivially_copyable<llama_hparams>::value, "llama_hparams must be trivially copyable");
-

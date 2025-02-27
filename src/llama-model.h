@@ -132,108 +132,101 @@ struct llama_layer_convnext {
 };
 
 struct llama_layer {
-    // normalization
-    struct ggml_tensor * attn_norm       = nullptr;
-    struct ggml_tensor * attn_norm_b     = nullptr;
-    struct ggml_tensor * attn_norm_2     = nullptr;
-    struct ggml_tensor * attn_norm_2_b   = nullptr;
-    struct ggml_tensor * attn_q_norm     = nullptr;
-    struct ggml_tensor * attn_q_norm_b   = nullptr;
-    struct ggml_tensor * attn_k_norm     = nullptr;
-    struct ggml_tensor * attn_k_norm_b   = nullptr;
-    struct ggml_tensor * attn_out_norm   = nullptr;
-    struct ggml_tensor * attn_out_norm_b = nullptr;
-    struct ggml_tensor * attn_q_a_norm   = nullptr;
-    struct ggml_tensor * attn_kv_a_norm  = nullptr;
-    struct ggml_tensor * attn_sub_norm   = nullptr;
-    struct ggml_tensor * attn_post_norm  = nullptr;
-    struct ggml_tensor * ffn_sub_norm    = nullptr;
-    struct ggml_tensor * attn_norm_cross = nullptr;
-    struct ggml_tensor * attn_norm_enc   = nullptr;
+    // Normalization
+    struct ggml_tensor * attn_norm       = nullptr; // Input RMS norm (already present)
+    struct ggml_tensor * attn_norm_b     = nullptr; // Bias for attn_norm (already present)
+    struct ggml_tensor * attn_norm_2     = nullptr; // (already present, optional for DeepSeek V3)
+    struct ggml_tensor * attn_norm_2_b   = nullptr; // (already present)
+    struct ggml_tensor * attn_q_norm     = nullptr; // (already present, optional)
+    struct ggml_tensor * attn_q_norm_b   = nullptr; // (already present)
+    struct ggml_tensor * attn_k_norm     = nullptr; // (already present, optional)
+    struct ggml_tensor * attn_k_norm_b   = nullptr; // (already present)
+    struct ggml_tensor * attn_out_norm   = nullptr; // (already present, optional)
+    struct ggml_tensor * attn_out_norm_b = nullptr; // (already present)
+    struct ggml_tensor * attn_q_a_norm   = nullptr; // Query LoRA A norm (needed for DeepSeek V3)
+    struct ggml_tensor * attn_kv_a_norm  = nullptr; // KV A norm (needed for DeepSeek V3, renamed from attn_kv_a_norm for clarity)
+    struct ggml_tensor * attn_sub_norm   = nullptr; // (already present, optional)
+    struct ggml_tensor * attn_post_norm  = nullptr; // (already present, optional)
+    struct ggml_tensor * ffn_sub_norm    = nullptr; // (already present, optional)
+    struct ggml_tensor * attn_norm_cross = nullptr; // (already present, optional)
+    struct ggml_tensor * attn_norm_enc   = nullptr; // (already present, optional)
+    struct ggml_tensor * ffn_norm        = nullptr; // Post-attention RMS norm (already present)
+    struct ggml_tensor * ffn_norm_b      = nullptr; // Bias for ffn_norm (already present)
+    struct ggml_tensor * ffn_post_norm    = nullptr; // (already present, optional)
+    struct ggml_tensor * layer_out_norm   = nullptr; // (already present, optional)
+    struct ggml_tensor * layer_out_norm_b = nullptr; // (already present)
+    struct ggml_tensor * ffn_norm_exps    = nullptr; // (already present, optional for MoE)
+    struct ggml_tensor * ffn_norm_enc     = nullptr; // (already present, optional)
 
-    // attention
-    struct ggml_tensor * wq        = nullptr;
-    struct ggml_tensor * wk        = nullptr;
-    struct ggml_tensor * wv        = nullptr;
-    struct ggml_tensor * wo        = nullptr;
-    struct ggml_tensor * wqkv      = nullptr;
-    struct ggml_tensor * wq_a      = nullptr;
-    struct ggml_tensor * wq_b      = nullptr;
-    struct ggml_tensor * wkv_a_mqa = nullptr;
-    struct ggml_tensor * wkv_b     = nullptr;
-    struct ggml_tensor * wq_cross  = nullptr;
-    struct ggml_tensor * wk_cross  = nullptr;
-    struct ggml_tensor * wv_cross  = nullptr;
-    struct ggml_tensor * wo_cross  = nullptr;
-    struct ggml_tensor * wq_enc    = nullptr;
-    struct ggml_tensor * wk_enc    = nullptr;
-    struct ggml_tensor * wv_enc    = nullptr;
-    struct ggml_tensor * wo_enc    = nullptr;
+    // Attention
+    struct ggml_tensor * wq        = nullptr; // Query projection (already present, used if q_lora_rank == 0)
+    struct ggml_tensor * wk        = nullptr; // Key projection (already present)
+    struct ggml_tensor * wv        = nullptr; // Value projection (already present)
+    struct ggml_tensor * wo        = nullptr; // Output projection (already present)
+    struct ggml_tensor * wqkv      = nullptr; // Combined QKV projection (already present, optional)
+    struct ggml_tensor * wq_a      = nullptr; // Query LoRA A projection (already present, needed for DeepSeek V3)
+    struct ggml_tensor * wq_b      = nullptr; // Query LoRA B projection (already present, needed for DeepSeek V3)
+    struct ggml_tensor * wkv_a_mqa = nullptr; // KV A projection with MQA (already present, needed for DeepSeek V3)
+    struct ggml_tensor * wkv_b     = nullptr; // KV B projection (already present, needed for DeepSeek V3)
+    struct ggml_tensor * wq_cross  = nullptr; // (already present, optional)
+    struct ggml_tensor * wk_cross  = nullptr; // (already present, optional)
+    struct ggml_tensor * wv_cross  = nullptr; // (already present, optional)
+    struct ggml_tensor * wo_cross  = nullptr; // (already present, optional)
+    struct ggml_tensor * wq_enc    = nullptr; // (already present, optional)
+    struct ggml_tensor * wk_enc    = nullptr; // (already present, optional)
+    struct ggml_tensor * wv_enc    = nullptr; // (already present, optional)
+    struct ggml_tensor * wo_enc    = nullptr; // (already present, optional)
 
-    // attention bias
-    struct ggml_tensor * bq   = nullptr;
-    struct ggml_tensor * bk   = nullptr;
-    struct ggml_tensor * bv   = nullptr;
-    struct ggml_tensor * bo   = nullptr;
-    struct ggml_tensor * bqkv = nullptr;
+    // Attention bias (optional, depending on DeepSeek V3 implementation)
+    struct ggml_tensor * bq   = nullptr; // (already present)
+    struct ggml_tensor * bk   = nullptr; // (already present)
+    struct ggml_tensor * bv   = nullptr; // (already present)
+    struct ggml_tensor * bo   = nullptr; // (already present)
+    struct ggml_tensor * bqkv = nullptr; // (already present)
 
-    // relative position bias
-    struct ggml_tensor * attn_rel_b       = nullptr;
-    struct ggml_tensor * attn_rel_b_enc   = nullptr;
-    struct ggml_tensor * attn_rel_b_cross = nullptr;
+    // Relative position bias (optional)
+    struct ggml_tensor * attn_rel_b       = nullptr; // (already present)
+    struct ggml_tensor * attn_rel_b_enc   = nullptr; // (already present)
+    struct ggml_tensor * attn_rel_b_cross = nullptr; // (already present)
 
-    // normalization
-    struct ggml_tensor * ffn_norm         = nullptr;
-    struct ggml_tensor * ffn_norm_b       = nullptr;
-    struct ggml_tensor * ffn_post_norm    = nullptr;
-    struct ggml_tensor * layer_out_norm   = nullptr;
-    struct ggml_tensor * layer_out_norm_b = nullptr;
-    struct ggml_tensor * ffn_norm_exps    = nullptr;
-    struct ggml_tensor * ffn_norm_enc     = nullptr;
+    // Feed-forward (FF) standard components
+    struct ggml_tensor * ffn_gate     = nullptr; // w1 (already present)
+    struct ggml_tensor * ffn_down     = nullptr; // w2 (already present)
+    struct ggml_tensor * ffn_up       = nullptr; // w3 (already present)
+    struct ggml_tensor * ffn_gate_enc = nullptr; // (already present, optional)
+    struct ggml_tensor * ffn_down_enc = nullptr; // (already present, optional)
+    struct ggml_tensor * ffn_up_enc   = nullptr; // (already present, optional)
 
-    // ff
-    struct ggml_tensor * ffn_gate     = nullptr; // w1
-    struct ggml_tensor * ffn_down     = nullptr; // w2
-    struct ggml_tensor * ffn_up       = nullptr; // w3
-    struct ggml_tensor * ffn_gate_enc = nullptr;
-    struct ggml_tensor * ffn_down_enc = nullptr;
-    struct ggml_tensor * ffn_up_enc   = nullptr;
+    // FF MoE components
+    struct ggml_tensor * ffn_gate_inp  = nullptr; // Gating linear layer for MoE (already present, needed for DeepSeek V3)
+    struct ggml_tensor * ffn_gate_exps = nullptr; // Expert gate projections (already present, needed for DeepSeek V3)
+    struct ggml_tensor * ffn_down_exps = nullptr; // Expert down projections (already present, needed for DeepSeek V3)
+    struct ggml_tensor * ffn_up_exps   = nullptr; // Expert up projections (already present, needed for DeepSeek V3)
 
-    // ff MoE
-    struct ggml_tensor * ffn_gate_inp  = nullptr;
-    struct ggml_tensor * ffn_gate_exps = nullptr;
-    struct ggml_tensor * ffn_down_exps = nullptr;
-    struct ggml_tensor * ffn_up_exps   = nullptr;
+    // FF shared expert (shexp) components
+    struct ggml_tensor * ffn_gate_inp_shexp = nullptr; // (already present, needed if n_shared_experts > 0)
+    struct ggml_tensor * ffn_gate_shexp     = nullptr; // (already present, needed if n_shared_experts > 0)
+    struct ggml_tensor * ffn_down_shexp     = nullptr; // (already present, needed if n_shared_experts > 0)
+    struct ggml_tensor * ffn_up_shexp       = nullptr; // (already present, needed if n_shared_experts > 0)
 
-    // ff shared expert (shexp)
-    struct ggml_tensor * ffn_gate_inp_shexp = nullptr;
-    struct ggml_tensor * ffn_gate_shexp     = nullptr;
-    struct ggml_tensor * ffn_down_shexp     = nullptr;
-    struct ggml_tensor * ffn_up_shexp       = nullptr;
+    // FF bias and additional MoE components
+    struct ggml_tensor * ffn_gate_b = nullptr; // (already present, optional)
+    struct ggml_tensor * ffn_down_b = nullptr; // b2 (already present, optional)
+    struct ggml_tensor * ffn_up_b   = nullptr; // b3 (already present, optional)
+    struct ggml_tensor * ffn_act    = nullptr; // (already present, optional)
+    struct ggml_tensor * ffn_exp_probs_b = nullptr; // Expert score correction bias (already present, needed for DeepSeek V3)
 
-    // ff bias
-    struct ggml_tensor * ffn_gate_b = nullptr;
-    struct ggml_tensor * ffn_down_b = nullptr; // b2
-    struct ggml_tensor * ffn_up_b   = nullptr; // b3
-    struct ggml_tensor * ffn_act    = nullptr;
-    struct ggml_tensor * ffn_exp_probs_b = nullptr;
-
-    // mamba proj
+    // Mamba, RWKV, and other fields remain unchanged as they are unrelated to DeepSeek V3
     struct ggml_tensor * ssm_in  = nullptr;
     struct ggml_tensor * ssm_x   = nullptr;
     struct ggml_tensor * ssm_dt  = nullptr;
     struct ggml_tensor * ssm_out = nullptr;
-
-    // mamba
     struct ggml_tensor * ssm_conv1d = nullptr;
     struct ggml_tensor * ssm_a      = nullptr;
     struct ggml_tensor * ssm_d      = nullptr;
-
-    // mamba bias
     struct ggml_tensor * ssm_conv1d_b = nullptr;
     struct ggml_tensor * ssm_dt_b     = nullptr;
 
-    // rwkv
     struct ggml_tensor * time_mix_w1         = nullptr;
     struct ggml_tensor * time_mix_w2         = nullptr;
     struct ggml_tensor * time_mix_lerp_x     = nullptr;
@@ -267,12 +260,10 @@ struct llama_layer {
     struct ggml_tensor * channel_mix_receptance = nullptr;
     struct ggml_tensor * channel_mix_value      = nullptr;
 
-    // long rope factors
     struct ggml_tensor * rope_long  = nullptr;
     struct ggml_tensor * rope_short = nullptr;
     struct ggml_tensor * rope_freqs = nullptr;
 
-    // bitnet scale
     struct ggml_tensor * wq_scale       = nullptr;
     struct ggml_tensor * wk_scale       = nullptr;
     struct ggml_tensor * wv_scale       = nullptr;
@@ -282,7 +273,6 @@ struct llama_layer {
     struct ggml_tensor * ffn_down_scale = nullptr;
 
     struct llama_layer_posnet posnet;
-
     struct llama_layer_convnext convnext;
 };
 

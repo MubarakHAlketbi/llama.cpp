@@ -3963,27 +3963,113 @@ class DeepseekModel(Model):
     model_arch = gguf.MODEL_ARCH.DEEPSEEK
 
     def set_vocab(self):
-        try:
+        # Define paths
+        model_file = self.dir_model / "tokenizer.model"
+        json_file = self.dir_model / "tokenizer.json"
+        config_file = self.dir_model / "tokenizer_config.json"
+
+        # Check for tokenizer.model and log a warning if missing
+        if not model_file.is_file():
+            logger.warning(
+                f"SentencePiece model file 'tokenizer.model' not found in {self.dir_model}. "
+                f"Attempting to load vocabulary from 'tokenizer.json' instead."
+            )
+            # Proceed with JSON-based loading if available
+            if not json_file.is_file():
+                raise FileNotFoundError(
+                    f"Neither 'tokenizer.model' nor 'tokenizer.json' found in {self.dir_model}. "
+                    "Cannot load tokenizer vocabulary."
+                )
+            self._set_vocab_from_json(json_file)
+        else:
+            # Fallback to SentencePiece if model file exists (unlikely in your case)
             self._set_vocab_sentencepiece()
-        except FileNotFoundError:
-            self._set_vocab_gpt2()
+
+        # Load tokenizer config for special tokens
+        bos_token: Optional[str] = None
+        eos_token: Optional[str] = None
+        pad_token: Optional[str] = None
+        if config_file.is_file():
+            with open(config_file, "r", encoding="utf-8") as f:
+                tokenizer_config = json.load(f)
+                bos_token = tokenizer_config.get("bos_token", {}).get("content", "<｜begin▁of▁sentence｜>")
+                eos_token = tokenizer_config.get("eos_token", {}).get("content", "<｜end▁of▁sentence｜>")
+                pad_token = tokenizer_config.get("pad_token", {}).get("content", "<｜end▁of▁sentence｜>")
+                # Set whether BOS/EOS are added by default
+                self.gguf_writer.add_add_bos_token(tokenizer_config.get("add_bos_token", True))
+                self.gguf_writer.add_add_eos_token(tokenizer_config.get("add_eos_token", False))
+        else:
+            logger.warning(
+                f"'tokenizer_config.json' not found in {self.dir_model}. Using default special tokens."
+            )
+            bos_token = "<｜begin▁of▁sentence｜>"
+            eos_token = "<｜end▁of▁sentence｜>"
+            pad_token = "<｜end▁of▁sentence｜>"
+
+        # Get token IDs from the loaded tokenizer
+        bos_id = self.tokenizer.token_to_id(bos_token) if bos_token else -1
+        eos_id = self.tokenizer.token_to_id(eos_token) if eos_token else -1
+        pad_id = self.tokenizer.token_to_id(pad_token) if pad_token else -1
+
+        # Set GGUF metadata
+        self.gguf_writer.add_bos_token_id(bos_id)
+        self.gguf_writer.add_eos_token_id(eos_id)
+        self.gguf_writer.add_pad_token_id(pad_id)
+
+    def _set_vocab_from_json(self, json_file: Path):
+        """Load tokenizer vocabulary from tokenizer.json."""
+        with open(json_file, "r", encoding="utf-8") as f:
+            tokenizer_data = json.load(f)
+
+        # Extract vocabulary from the JSON structure
+        vocab = tokenizer_data.get("model", {}).get("vocab", {})
+        if not vocab:
+            raise ValueError(
+                f"Invalid 'tokenizer.json' at {json_file}: 'model.vocab' not found or empty."
+            )
+
+        # Populate the tokenizer (assuming it's a PreTrainedTokenizerFast-like structure)
+        self.tokenizer = type(self)._create_tokenizer_from_json(tokenizer_data)
+        vocab_size = len(vocab)
+        self.gguf_writer.add_tokenizer_model("llama")  # Matches LlamaTokenizerFast
+        self.gguf_writer.add_token_list(list(vocab.keys()))
+        self.gguf_writer.add_vocab_size(vocab_size)
+
+    @staticmethod
+    def _create_tokenizer_from_json(tokenizer_data: dict):
+        """Create a minimal tokenizer object for token_to_id lookups."""
+        from tokenizers import Tokenizer
+        tokenizer = Tokenizer.from_str(json.dumps(tokenizer_data))
+        return tokenizer
+
 
     def set_gguf_parameters(self):
         super().set_gguf_parameters()
         hparams = self.hparams
+
+        self.gguf_writer.add_context_length(hparams["max_position_embeddings"])
+        self.gguf_writer.add_embedding_length(hparams["hidden_size"])
+        self.gguf_writer.add_block_count(hparams["num_hidden_layers"])
+        self.gguf_writer.add_feed_forward_length(hparams["intermediate_size"])
+        self.gguf_writer.add_head_count(hparams["num_attention_heads"])
+        self.gguf_writer.add_head_count_kv(hparams.get("num_key_value_heads", hparams["num_attention_heads"])) # Default to num_attention_heads if not present
+        self.gguf_writer.add_layer_norm_rms_eps(hparams["rms_norm_eps"])
         if "head_dim" in hparams:
             rope_dim = hparams["head_dim"]
         else:
             rope_dim = hparams["hidden_size"] // hparams["num_attention_heads"]
-
         self.gguf_writer.add_rope_dimension_count(rope_dim)
-        self.gguf_writer.add_rope_scaling_type(gguf.RopeScalingType.NONE)
+        self.gguf_writer.add_rope_freq_base(hparams.get("rope_theta", 10000.0)) # Default to 10000.0 if not present
+        self.gguf_writer.add_rope_scaling_type(gguf.RopeScalingType.NONE) # DeepseekV1 doesn't use RoPE scaling
+        self.gguf_writer.add_file_type(self.ftype)
+
+        # DeepseekV1 specific parameters
         self.gguf_writer.add_leading_dense_block_count(hparams["first_k_dense_replace"])
         self.gguf_writer.add_vocab_size(hparams["vocab_size"])
-        self.gguf_writer.add_expert_feed_forward_length(hparams["moe_intermediate_size"])
+        self.gguf_writer.add_expert_feed_forward_length(hparams["intermediate_size"]) # Same as regular ffn_length in this case
         self.gguf_writer.add_expert_weights_scale(1.0)
-        self.gguf_writer.add_expert_count(hparams["n_routed_experts"])
-        self.gguf_writer.add_expert_shared_count(hparams["n_shared_experts"])
+        self.gguf_writer.add_expert_count(hparams["num_hidden_layers"]) # Use num_hidden_layers, as it's not an MoE model
+        self.gguf_writer.add_expert_shared_count(0)  # No shared experts
 
     _experts: list[dict[str, Tensor]] | None = None
 
@@ -3997,47 +4083,20 @@ class DeepseekModel(Model):
 
     def modify_tensors(self, data_torch: Tensor, name: str, bid: int | None) -> Iterable[tuple[str, Tensor]]:
         n_head = self.hparams["num_attention_heads"]
-        n_kv_head = self.hparams.get("num_key_value_heads")
+        n_kv_head = self.hparams.get("num_key_value_heads", n_head)
 
         if name.endswith(("q_proj.weight", "q_proj.bias")):
             data_torch = DeepseekModel.permute(data_torch, n_head, n_head)
         if name.endswith(("k_proj.weight", "k_proj.bias")):
             data_torch = DeepseekModel.permute(data_torch, n_head, n_kv_head)
 
-        # process the experts separately
-        if name.find("mlp.experts") != -1:
-            n_experts = self.hparams["n_routed_experts"]
-            assert bid is not None
+        # Use map_tensor_name with try_suffixes
+        new_name = self.map_tensor_name(name, try_suffixes=(".weight", ".bias"))
+        if new_name is None:
+            logger.warning(f"Unmapped tensor name: {name}")  # Log unmapped names
+            new_name = name #yield the same name
 
-            if self._experts is None:
-                self._experts = [{} for _ in range(self.block_count)]
-
-            self._experts[bid][name] = data_torch
-
-            if len(self._experts[bid]) >= n_experts * 3:
-                tensors: list[tuple[str, Tensor]] = []
-
-                # merge the experts into a single 3d tensor
-                for w_name in ["down_proj", "gate_proj", "up_proj"]:
-                    datas: list[Tensor] = []
-
-                    for xid in range(n_experts):
-                        ename = f"model.layers.{bid}.mlp.experts.{xid}.{w_name}.weight"
-                        datas.append(self._experts[bid][ename])
-                        del self._experts[bid][ename]
-
-                    data_torch = torch.stack(datas, dim=0)
-
-                    merged_name = f"model.layers.{bid}.mlp.experts.{w_name}.weight"
-
-                    new_name = self.map_tensor_name(merged_name)
-
-                    tensors.append((new_name, data_torch))
-                return tensors
-            else:
-                return []
-
-        return [(self.map_tensor_name(name), data_torch)]
+        yield (new_name, data_torch))
 
     def prepare_tensors(self):
         super().prepare_tensors()
@@ -4048,31 +4107,129 @@ class DeepseekModel(Model):
             if len(experts) > 0:
                 raise ValueError(f"Unprocessed experts: {experts}")
 
-
 @Model.register("DeepseekV2ForCausalLM")
-@Model.register("DeepseekV3ForCausalLM")
 class DeepseekV2Model(Model):
     model_arch = gguf.MODEL_ARCH.DEEPSEEK2
 
     def set_vocab(self):
-        self._set_vocab_gpt2()
+        # Define paths
+        model_file = self.dir_model / "tokenizer.model"
+        json_file = self.dir_model / "tokenizer.json"
+        config_file = self.dir_model / "tokenizer_config.json"
+
+        # Check for tokenizer.model and log a warning if missing
+        if not model_file.is_file():
+            logger.warning(
+                f"SentencePiece model file 'tokenizer.model' not found in {self.dir_model}. "
+                f"Attempting to load vocabulary from 'tokenizer.json' instead."
+            )
+            # Proceed with JSON-based loading if available
+            if not json_file.is_file():
+                raise FileNotFoundError(
+                    f"Neither 'tokenizer.model' nor 'tokenizer.json' found in {self.dir_model}. "
+                    "Cannot load tokenizer vocabulary."
+                )
+            self._set_vocab_from_json(json_file)
+        else:
+            # Fallback to SentencePiece if model file exists (unlikely in your case)
+            self._set_vocab_sentencepiece()
+
+        # Load tokenizer config for special tokens
+        bos_token: Optional[str] = None
+        eos_token: Optional[str] = None
+        pad_token: Optional[str] = None
+        if config_file.is_file():
+            with open(config_file, "r", encoding="utf-8") as f:
+                tokenizer_config = json.load(f)
+                bos_token = tokenizer_config.get("bos_token", {}).get("content", "<｜begin▁of▁sentence｜>")
+                eos_token = tokenizer_config.get("eos_token", {}).get("content", "<｜end▁of▁sentence｜>")
+                pad_token = tokenizer_config.get("pad_token", {}).get("content", "<｜end▁of▁sentence｜>")
+                # Set whether BOS/EOS are added by default
+                self.gguf_writer.add_add_bos_token(tokenizer_config.get("add_bos_token", True))
+                self.gguf_writer.add_add_eos_token(tokenizer_config.get("add_eos_token", False))
+        else:
+            logger.warning(
+                f"'tokenizer_config.json' not found in {self.dir_model}. Using default special tokens."
+            )
+            bos_token = "<｜begin▁of▁sentence｜>"
+            eos_token = "<｜end▁of▁sentence｜>"
+            pad_token = "<｜end▁of▁sentence｜>"
+
+        # Get token IDs from the loaded tokenizer
+        bos_id = self.tokenizer.token_to_id(bos_token) if bos_token else -1
+        eos_id = self.tokenizer.token_to_id(eos_token) if eos_token else -1
+        pad_id = self.tokenizer.token_to_id(pad_token) if pad_token else -1
+
+        # Set GGUF metadata
+        self.gguf_writer.add_bos_token_id(bos_id)
+        self.gguf_writer.add_eos_token_id(eos_id)
+        self.gguf_writer.add_pad_token_id(pad_id)
+
+    def _set_vocab_from_json(self, json_file: Path):
+        """Load tokenizer vocabulary from tokenizer.json."""
+        with open(json_file, "r", encoding="utf-8") as f:
+            tokenizer_data = json.load(f)
+
+        # Extract vocabulary from the JSON structure
+        vocab = tokenizer_data.get("model", {}).get("vocab", {})
+        if not vocab:
+            raise ValueError(
+                f"Invalid 'tokenizer.json' at {json_file}: 'model.vocab' not found or empty."
+            )
+
+        # Populate the tokenizer (assuming it's a PreTrainedTokenizerFast-like structure)
+        self.tokenizer = type(self)._create_tokenizer_from_json(tokenizer_data)
+        vocab_size = len(vocab)
+        self.gguf_writer.add_tokenizer_model("llama")  # Matches LlamaTokenizerFast
+        self.gguf_writer.add_token_list(list(vocab.keys()))
+        self.gguf_writer.add_vocab_size(vocab_size)
+
+    @staticmethod
+    def _create_tokenizer_from_json(tokenizer_data: dict):
+        """Create a minimal tokenizer object for token_to_id lookups."""
+        from tokenizers import Tokenizer
+        tokenizer = Tokenizer.from_str(json.dumps(tokenizer_data))
+        return tokenizer
 
     def set_gguf_parameters(self):
         super().set_gguf_parameters()
         hparams = self.hparams
 
+        self.gguf_writer.add_context_length(hparams["max_position_embeddings"])
+        self.gguf_writer.add_embedding_length(hparams["hidden_size"])
+        self.gguf_writer.add_block_count(hparams["num_hidden_layers"])
+        self.gguf_writer.add_head_count(hparams["num_attention_heads"])
+        self.gguf_writer.add_head_count_kv(hparams.get("num_key_value_heads", hparams["num_attention_heads"])) # Default to num_attention_heads
+        self.gguf_writer.add_layer_norm_rms_eps(hparams["rms_norm_eps"])
+        if "rope_theta" in hparams:
+            self.gguf_writer.add_rope_freq_base(hparams["rope_theta"])
+        if "rope_scaling" in hparams and hparams["rope_scaling"] is not None:
+            if hparams["rope_scaling"]["type"] == "yarn":
+                self.gguf_writer.add_rope_scaling_type(gguf.RopeScalingType.YARN)
+                self.gguf_writer.add_rope_scaling_factor(hparams["rope_scaling"]["factor"])
+                self.gguf_writer.add_rope_scaling_orig_ctx_len(hparams["rope_scaling"]["original_max_position_embeddings"])
+                if "mscale_all_dim" in hparams["rope_scaling"]:  #DeepseekV2 specific
+                    self.gguf_writer.add_rope_scaling_yarn_log_mul(0.1 * hparams["rope_scaling"]["mscale_all_dim"])
+        else:
+            self.gguf_writer.add_rope_scaling_type(gguf.RopeScalingType.NONE)
+
+        # DeepseekV2 specific parameters
         self.gguf_writer.add_leading_dense_block_count(hparams["first_k_dense_replace"])
         self.gguf_writer.add_vocab_size(hparams["vocab_size"])
+        self.gguf_writer.add_expert_feed_forward_length(hparams["moe_intermediate_size"])
+        self.gguf_writer.add_expert_count(hparams["n_routed_experts"] + hparams["n_shared_experts"]) # Total experts
+        self.gguf_writer.add_expert_used_count(hparams["num_experts_per_tok"])
+        self.gguf_writer.add_expert_shared_count(hparams["n_shared_experts"])
+        self.gguf_writer.add_expert_weights_scale(hparams.get("routed_scaling_factor", 1.0)) # Default to 1.0
+        self.gguf_writer.add_expert_weights_norm(hparams.get("norm_topk_prob", False)) # Default to False
         if "q_lora_rank" in hparams and hparams["q_lora_rank"] is not None:
             self.gguf_writer.add_q_lora_rank(hparams["q_lora_rank"])
-        self.gguf_writer.add_kv_lora_rank(hparams["kv_lora_rank"])
+        if "kv_lora_rank" in hparams and hparams["kv_lora_rank"] is not None:
+            self.gguf_writer.add_kv_lora_rank(hparams["kv_lora_rank"])
+
         self.gguf_writer.add_key_length(hparams["qk_nope_head_dim"] + hparams["qk_rope_head_dim"])
         self.gguf_writer.add_value_length(hparams["v_head_dim"])
-        self.gguf_writer.add_expert_feed_forward_length(hparams["moe_intermediate_size"])
-        self.gguf_writer.add_expert_count(hparams["n_routed_experts"])
-        self.gguf_writer.add_expert_shared_count(hparams["n_shared_experts"])
-        self.gguf_writer.add_expert_weights_scale(hparams["routed_scaling_factor"])
-        self.gguf_writer.add_expert_weights_norm(hparams["norm_topk_prob"])
+        self.gguf_writer.add_rope_dimension_count(hparams["qk_rope_head_dim"])
 
         if hparams["scoring_func"] == "sigmoid":
             self.gguf_writer.add_expert_gating_func(gguf.ExpertGatingFuncType.SIGMOID)
@@ -4081,71 +4238,302 @@ class DeepseekV2Model(Model):
         else:
             raise ValueError(f"Unsupported scoring_func value: {hparams['scoring_func']}")
 
-        self.gguf_writer.add_rope_dimension_count(hparams["qk_rope_head_dim"])
-
-        if self.hparams.get("rope_scaling") is not None and "factor" in self.hparams["rope_scaling"]:
-            if self.hparams["rope_scaling"].get("type") == "yarn":
-                self.gguf_writer.add_rope_scaling_type(gguf.RopeScalingType.YARN)
-                self.gguf_writer.add_rope_scaling_factor(self.hparams["rope_scaling"]["factor"])
-                self.gguf_writer.add_rope_scaling_orig_ctx_len(self.hparams["rope_scaling"]["original_max_position_embeddings"])
-                self.gguf_writer.add_rope_scaling_yarn_log_mul(0.1 * hparams["rope_scaling"]["mscale_all_dim"])
-
     _experts: list[dict[str, Tensor]] | None = None
 
+    @staticmethod
+    def permute(weights: Tensor, n_head: int, n_head_kv: int | None):
+        if n_head_kv is not None and n_head != n_head_kv:
+            n_head = n_head_kv
+        return (weights.reshape(n_head, 2, weights.shape[0] // n_head // 2, *weights.shape[1:])
+                .swapaxes(1, 2)
+                .reshape(weights.shape))
+
     def modify_tensors(self, data_torch: Tensor, name: str, bid: int | None) -> Iterable[tuple[str, Tensor]]:
-        # rename e_score_correction_bias tensors
-        if name.endswith("e_score_correction_bias"):
-            name = name.replace("e_score_correction_bias", "e_score_correction.bias")
+    # Skip Multi-Token Prediction (MTP) layers
+    block_count = self.hparams["num_hidden_layers"]
+    match = re.match(r"model.layers.(\d+)", name)
+    if match and int(match.group(1)) >= block_count:
+        return []
 
-        # skip Multi-Token Prediction (MTP) layers
-        block_count = self.hparams["num_hidden_layers"]
-        match = re.match(r"model.layers.(\d+)", name)
-        if match and int(match.group(1)) >= block_count:
-            return []
+    # Use map_tensor_name with try_suffixes
+    new_name = self.map_tensor_name(name, try_suffixes=(".weight", ".bias"))
+    if new_name is None:
+        logger.warning(f"Unmapped tensor name: {name}")
+        new_name = name
 
-        # process the experts separately
-        if name.find("mlp.experts") != -1:
-            n_experts = self.hparams["n_routed_experts"]
-            assert bid is not None
+    # Handle tensor-specific transformations
+    n_head = self.hparams["num_attention_heads"]
+    n_kv_head = self.hparams.get("num_key_value_heads", n_head)
 
-            if self._experts is None:
-                self._experts = [{} for _ in range(self.block_count)]
+    # Attention Q projections (keep q_a and q_b separate)
+    if name.endswith("q_a_proj.weight"):
+        data_torch = self.permute(data_torch, n_head, None)
+        yield (f"blk.{bid}.attn_q_a.weight", data_torch)
+        return
+    elif name.endswith("q_b_proj.weight"):
+        yield (f"blk.{bid}.attn_q_b.weight", data_torch)
+        return
 
-            self._experts[bid][name] = data_torch
+    # Attention KV projections (split kv_a_proj_with_mqa into k and v, keep kv_b separate)
+    elif name.endswith("kv_a_proj_with_mqa.weight"):
+        k_size = n_kv_head * (self.hparams["qk_nope_head_dim"] + self.hparams["qk_rope_head_dim"])
+        v_size = n_kv_head * self.hparams["v_head_dim"]
+        k_proj = data_torch[:k_size, :]
+        v_proj = data_torch[k_size:k_size + v_size, :]
+        yield (f"blk.{bid}.attn_kv_a_mqa.weight", data_torch)  # Store full tensor as mapped
+        # Optionally yield split tensors if GGML needs them separate:
+        # yield (f"blk.{bid}.attn_k.weight", self.permute(k_proj, n_head, n_kv_head))
+        # yield (f"blk.{bid}.attn_v.weight", v_proj)
+        return
+    elif name.endswith("kv_b_proj.weight"):
+        yield (f"blk.{bid}.attn_kv_b.weight", data_torch)
+        return
 
-            if len(self._experts[bid]) >= n_experts * 3:
-                tensors: list[tuple[str, Tensor]] = []
+    # Handle MLP layers (including experts)
+    elif name.startswith("layers.") and ".mlp." in name:
+        layer_num = int(name.split(".")[1])
 
-                # merge the experts into a single 3d tensor
-                for w_name in ["down_proj", "gate_proj", "up_proj"]:
-                    datas: list[Tensor] = []
+        # Handle shared experts
+        if "shared_experts" in name:
+            name = name.replace("shared_experts.", "")
+            new_name = self.map_tensor_name(name, try_suffixes=(".weight", ".bias"))
+            yield (new_name, data_torch)
+            return
+        # Handle per-layer experts
+        elif "experts" in name:
+            parts = name.split(".")
+            expert_id = int(parts[3])  # Get the expert ID
+            tensor_name = parts[4]
+            bid = expert_id + layer_num * (self.hparams["n_routed_experts"] + self.hparams.get("n_shared_experts", 0))
+            new_name = self.format_tensor_name(f"mlp.experts.{tensor_name}", bid)
+            yield (new_name, data_torch)
+            return
+        # Handle the non-expert "gate" (router)
+        elif "gate.weight" in name:
+            new_name = self.format_tensor_name("gate.weight", layer_num)
+            yield (new_name, data_torch)
+            return
+        else:
+            print(f"Unexpected mlp layer name: {name}")  # Debugging
 
-                    for xid in range(n_experts):
-                        ename = f"model.layers.{bid}.mlp.experts.{xid}.{w_name}.weight"
-                        datas.append(self._experts[bid][ename])
-                        del self._experts[bid][ename]
+    # Handle other layers (embedding, norm, lm_head)
+    else:
+        name = name.replace("embed_tokens", "token_embd")
+        name = name.replace("lm_head", "output")
+        if "norm.weight" in name:
+            name = name.replace("model.norm", "output_norm")
+        if "weight" in name and not name.endswith((".weight", ".bias")):
+            name += ".weight"
+        yield (name, data_torch)
 
-                    data_torch = torch.stack(datas, dim=0)
+    yield (new_name, data_torch)
 
-                    merged_name = f"model.layers.{bid}.mlp.experts.{w_name}.weight"
+    def prepare_tensors(self):
+        #this is handled in modify_tensor
+        pass
 
-                    new_name = self.map_tensor_name(merged_name)
+@Model.register("DeepseekV3ForCausalLM")
+class DeepseekV3Model(Model):
+    model_arch = gguf.MODEL_ARCH.DEEPSEEK3
 
-                    tensors.append((new_name, data_torch))
-                return tensors
-            else:
-                return []
+    def set_vocab(self):
+        # Define paths
+        model_file = self.dir_model / "tokenizer.model"
+        json_file = self.dir_model / "tokenizer.json"
+        config_file = self.dir_model / "tokenizer_config.json"
 
-        return [(self.map_tensor_name(name), data_torch)]
+        # Check for tokenizer.model and log a warning if missing
+        if not model_file.is_file():
+            logger.warning(
+                f"SentencePiece model file 'tokenizer.model' not found in {self.dir_model}. "
+                f"Attempting to load vocabulary from 'tokenizer.json' instead."
+            )
+            if not json_file.is_file():
+                raise FileNotFoundError(
+                    f"Neither 'tokenizer.model' nor 'tokenizer.json' found in {self.dir_model}. "
+                    "Cannot load tokenizer vocabulary."
+                )
+            self._set_vocab_from_json(json_file)
+        else:
+            self._set_vocab_sentencepiece()
+
+        # Load tokenizer config for special tokens
+        bos_token: Optional[str] = None
+        eos_token: Optional[str] = None
+        pad_token: Optional[str] = None
+        if config_file.is_file():
+            with open(config_file, "r", encoding="utf-8") as f:
+                tokenizer_config = json.load(f)
+                bos_token = tokenizer_config.get("bos_token", {}).get("content", "<｜begin▁of▁sentence｜>")
+                eos_token = tokenizer_config.get("eos_token", {}).get("content", "<｜end▁of▁sentence｜>")
+                pad_token = tokenizer_config.get("pad_token", {}).get("content", "<｜end▁of▁sentence｜>")
+                self.gguf_writer.add_add_bos_token(tokenizer_config.get("add_bos_token", True))
+                self.gguf_writer.add_add_eos_token(tokenizer_config.get("add_eos_token", False))
+        else:
+            logger.warning(
+                f"'tokenizer_config.json' not found in {self.dir_model}. Using default special tokens."
+            )
+            bos_token = "<｜begin▁of▁sentence｜>"
+            eos_token = "<｜end▁of▁sentence｜>"
+            pad_token = "<｜end▁of▁sentence｜>"
+
+        bos_id = self.tokenizer.token_to_id(bos_token) if bos_token else -1
+        eos_id = self.tokenizer.token_to_id(eos_token) if eos_token else -1
+        pad_id = self.tokenizer.token_to_id(pad_token) if pad_token else -1
+
+        self.gguf_writer.add_bos_token_id(bos_id)
+        self.gguf_writer.add_eos_token_id(eos_id)
+        self.gguf_writer.add_pad_token_id(pad_id)
+
+    def _set_vocab_from_json(self, json_file: Path):
+        # (Same as in DeepseekModel and DeepseekV2Model)
+        with open(json_file, "r", encoding="utf-8") as f:
+            tokenizer_data = json.load(f)
+        vocab = tokenizer_data.get("model", {}).get("vocab", {})
+        if not vocab:
+            raise ValueError(f"Invalid 'tokenizer.json' at {json_file}: 'model.vocab' not found or empty.")
+        self.tokenizer = type(self)._create_tokenizer_from_json(tokenizer_data)
+        vocab_size = len(vocab)
+        self.gguf_writer.add_tokenizer_model("llama")
+        self.gguf_writer.add_token_list(list(vocab.keys()))
+        self.gguf_writer.add_vocab_size(vocab_size)
+
+    @staticmethod
+    def _create_tokenizer_from_json(tokenizer_data: dict):
+        from tokenizers import Tokenizer
+        tokenizer = Tokenizer.from_str(json.dumps(tokenizer_data))
+        return tokenizer
+
+    def set_gguf_parameters(self):
+        super().set_gguf_parameters()
+        hparams = self.hparams
+
+        self.gguf_writer.add_context_length(hparams["max_position_embeddings"])
+        self.gguf_writer.add_embedding_length(hparams["hidden_size"])
+        self.gguf_writer.add_block_count(hparams["num_hidden_layers"])
+        self.gguf_writer.add_head_count(hparams["num_attention_heads"])
+        self.gguf_writer.add_head_count_kv(hparams.get("num_key_value_heads", hparams["num_attention_heads"]))
+        self.gguf_writer.add_layer_norm_rms_eps(hparams["rms_norm_eps"])
+        self.gguf_writer.add_rope_dimension_count(hparams["qk_rope_head_dim"])
+        self.gguf_writer.add_rope_freq_base(hparams.get("rope_theta", 10000.0))
+        if hparams.get("rope_scaling") is not None and "factor" in hparams["rope_scaling"]:
+            if hparams["rope_scaling"].get("type") == "yarn":
+                self.gguf_writer.add_rope_scaling_type(gguf.RopeScalingType.YARN)
+                self.gguf_writer.add_rope_scaling_factor(hparams["rope_scaling"]["factor"])
+                self.gguf_writer.add_rope_scaling_orig_ctx_len(
+                    hparams["rope_scaling"]["original_max_position_embeddings"]
+                )
+        else:
+            self.gguf_writer.add_rope_scaling_type(gguf.RopeScalingType.NONE)
+
+        # DeepseekV3 specific parameters
+        self.gguf_writer.add_leading_dense_block_count(hparams["first_k_dense_replace"])
+        self.gguf_writer.add_vocab_size(hparams["vocab_size"])
+        if "q_lora_rank" in hparams and hparams["q_lora_rank"] is not None:
+            self.gguf_writer.add_q_lora_rank(hparams["q_lora_rank"])
+        self.gguf_writer.add_kv_lora_rank(hparams["kv_lora_rank"])
+        self.gguf_writer.add_key_length(hparams["qk_nope_head_dim"] + hparams["qk_rope_head_dim"])
+        self.gguf_writer.add_value_length(hparams["v_head_dim"])
+        self.gguf_writer.add_expert_feed_forward_length(hparams["moe_intermediate_size"])
+        self.gguf_writer.add_expert_count(hparams["n_routed_experts"] + hparams["n_shared_experts"])
+        self.gguf_writer.add_expert_used_count(hparams["num_experts_per_tok"])
+        self.gguf_writer.add_expert_shared_count(hparams["n_shared_experts"])
+        self.gguf_writer.add_expert_weights_scale(hparams.get("routed_scaling_factor", 1.0))
+        self.gguf_writer.add_expert_weights_norm(hparams.get("norm_topk_prob", False))
+
+        if hparams["scoring_func"] == "sigmoid":
+            self.gguf_writer.add_expert_gating_func(gguf.ExpertGatingFuncType.SIGMOID)
+        elif hparams["scoring_func"] == "softmax":
+            self.gguf_writer.add_expert_gating_func(gguf.ExpertGatingFuncType.SOFTMAX)
+        else:
+            raise ValueError(f"Unsupported scoring_func value: {hparams['scoring_func']}")
+
+    @staticmethod
+    def permute(weights: Tensor, n_head: int, n_head_kv: int | None):
+        if n_head_kv is not None and n_head != n_head_kv:
+            n_head = n_head_kv
+        return (weights.reshape(n_head, 2, weights.shape[0] // n_head // 2, *weights.shape[1:])
+                .swapaxes(1, 2)
+                .reshape(weights.shape))
+
+    def modify_tensors(self, data_torch: Tensor, name: str, bid: int | None) -> Iterable[tuple[str, Tensor]]:
+    # Use map_tensor_name with try_suffixes
+    new_name = self.map_tensor_name(name, try_suffixes=(".weight", ".bias"))
+    if new_name is None:
+        logger.warning(f"Unmapped tensor name: {name}")
+        new_name = name
+
+    # Handle tensor-specific transformations
+    n_head = self.hparams["num_attention_heads"]
+    n_kv_head = self.hparams["num_key_value_heads"]
+
+    if bid is not None:  # Processing a layer within a block
+        if name.startswith(f"model.layers.{bid}."):
+            # Attention Q projections
+            if name.endswith(".q_a_proj.weight"):
+                data_torch = self.permute(data_torch, n_head, None)
+                yield (f"blk.{bid}.attn_q_a.weight", data_torch)
+                return
+            elif name.endswith(".q_b_proj.weight"):
+                yield (f"blk.{bid}.attn_q_b.weight", data_torch)
+                return
+
+            # Attention KV projections
+            elif name.endswith(".kv_a_proj_with_mqa.weight"):
+                k_size = n_kv_head * (self.hparams["qk_nope_head_dim"] + self.hparams["qk_rope_head_dim"])
+                v_size = n_kv_head * self.hparams["v_head_dim"]
+                k_proj = data_torch[:k_size, :]
+                v_proj = data_torch[k_size:k_size + v_size, :]
+                yield (f"blk.{bid}.attn_kv_a_mqa.weight", data_torch)  # Full tensor
+                # Optionally split if GGML needs separate K and V:
+                # yield (f"blk.{bid}.attn_k.weight", self.permute(k_proj, n_head, n_kv_head))
+                # yield (f"blk.{bid}.attn_v.weight", v_proj)
+                return
+            elif name.endswith(".kv_b_proj.weight"):
+                yield (f"blk.{bid}.attn_kv_b.weight", data_torch)
+                return
+
+            # Normalizations and other attention tensors
+            elif name.endswith(".q_a_layernorm.weight"):
+                yield (f"blk.{bid}.attn_q_a_norm.weight", data_torch)
+                return
+            elif name.endswith(".kv_a_layernorm.weight"):
+                yield (f"blk.{bid}.attn_kv_a_norm.weight", data_torch)
+                return
+            elif name.endswith(".o_proj.weight"):
+                yield (f"blk.{bid}.attn_out.weight", data_torch)
+                return
+            elif name.endswith(".input_layernorm.weight"):
+                yield (f"blk.{bid}.attn_norm.weight", data_torch)
+                return
+            elif name.endswith(".post_attention_layernorm.weight"):
+                yield (f"blk.{bid}.ffn_norm.weight", data_torch)
+                return
+
+            # MLP layers
+            elif name.endswith(".gate.weight"):
+                yield (f"blk.{bid}.ffn_gate.weight", data_torch)
+                return
+            elif name.endswith(".gate.e_score_correction_bias"):
+                return  # Skip this tensor
+            elif name.startswith(f"model.layers.{bid}.mlp.shared_experts."):
+                name = name.replace(f"model.layers.{bid}.mlp.shared_experts.", f"blk.{bid}.mlp.shared_experts.")
+                new_name = self.map_tensor_name(name, try_suffixes=(".weight", ".bias"))
+                yield (new_name, data_torch)
+                return
+            elif name.startswith(f"model.layers.{bid}.mlp.experts."):
+                parts = name.split(".")
+                expert_id = int(parts[4])  # e.g., model.layers.{bid}.mlp.experts.{expert_id}
+                tensor_name = parts[5]
+                expert_bid = expert_id + bid * (self.hparams["n_routed_experts"] + self.hparams["n_shared_experts"])
+                new_name = f"blk.{expert_bid}.ffn_{tensor_name.replace('experts.', '')}"
+                yield (new_name, data_torch)
+                return
+
+    yield (new_name, data_torch)
 
     def prepare_tensors(self):
         super().prepare_tensors()
-
-        if self._experts is not None:
-            # flatten `list[dict[str, Tensor]]` into `list[str]`
-            experts = [k for d in self._experts for k in d.keys()]
-            if len(experts) > 0:
-                raise ValueError(f"Unprocessed experts: {experts}")
 
 
 @Model.register("T5WithLMHeadModel")

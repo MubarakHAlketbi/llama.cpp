@@ -339,7 +339,7 @@ target_link_libraries(ggml-base PRIVATE Threads::Threads)
 
 find_library(MATH_LIBRARY m)
 if (MATH_LIBRARY)
-    if (NOT WIN32 OR NOT DEFINED ENV{ONEAPI_ROOT})
+    if (NOT WIN32)  # Only link m on non-Windows platforms
         target_link_libraries(ggml-base PRIVATE m)
     endif()
 endif()
